@@ -32,7 +32,17 @@ railway.json   Railway deploy config (backend)
 | `POST` | `/trajectories` | Ingest a raw JSON list of events (clean / dedupe / flag) |
 | `GET`  | `/sessions` | List sessions with counts (events, injections, integrity, runs) |
 | `GET`  | `/sessions/{id}/events` | The session's cleaned trajectory, in step order |
+| `GET`  | `/sessions/{id}/features` | The deterministic `extract_features` output (read-only, no LLM) |
+| `GET`  | `/sessions/{id}/rejects` | Rows dropped/flagged at ingest (the closed reject enum) |
+| `GET`  | `/sessions/{id}/runs` | Persisted `insight_runs` metadata (version, model, validation_status, latency) |
 | `GET`  | `/sessions/{id}/insight[?version=v1\|v2]` | Generate + return a guardrailed `Insight` (one LLM call). `version` defaults to `ACTIVE_PROMPT`; the dashboard uses it to compare prompts. |
+
+> The `POST` plus the three read endpoints above (`features`, `rejects`, `runs`)
+> exist so the **dashboard can surface the backend's deterministic internals** —
+> ingest counts, the dedupe/conflict reject log, the exact features the LLM
+> narrates over, and the real per-run `validation_status`. They are beyond the
+> original spec's endpoint list (which is `POST /trajectories` +
+> `GET .../insight`); see the frontend note below.
 
 ---
 
@@ -98,13 +108,27 @@ dev. Full frontend docs: `web/README.md`.
 
 It has two views (top-left switch):
 
-- **inspect** — session rail → trajectory timeline → on-demand insight.
+- **inspect** — session rail → trajectory timeline → on-demand insight. The detail
+  pane shows the backend's **deterministic features** (progress_ratio, loop,
+  stall, conflicts, terminal) and the **ingest log** (reject reasons — e.g.
+  `duplicate_event`, `conflicting_step · kept`), so the dedupe/conflict story is
+  visible, not just the insight. The confidence meter's cap ledger is now the
+  exact `guards.py` formula fed by real fields (`injection`, `conflict`,
+  `rejects`). The insight seal shows the real `validation_status`
+  (valid/retried/fallback), and an `insight_runs` history lists the persisted
+  per-version runs.
 - **compare v1↔v2** — pick a session, run **both** prompt versions, and read them
   side by side. A diff strip surfaces the headline signal: does each version's
   summary *name the injected page text as content* (v2 is built to; v1 often
   omits it)? Each run appends a fresh `insight_runs` row per version. Since the
   model is nondeterministic, treat one run as an anecdote — `eval.py` measures
   the rate across N trials.
+
+The **ingest** button (top bar) POSTs a raw event array to `/trajectories` and
+shows the `accepted/rejected/flagged` summary — ingest the same payload twice to
+watch dedupe drop every event. The seed also loads a small **conflict example**
+(`conf99`) so the kept-conflict / integrity path is demonstrable (forked rail
+node, integrity flag, `conflict_count`).
 
 ### Demo (2 minutes, end to end)
 

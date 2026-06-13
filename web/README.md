@@ -41,14 +41,26 @@ Two views, switched top-left:
 
 - **Left rail** — every session (`GET /sessions`) with event count, relative
   time, and flag dots. Filter by id / flagged / injection.
-- **Center** — the session's trajectory (`GET /sessions/:id/events`) as a status
-  timeline. Friction steps dash the rail; repeated actions get a `loop ×N` badge;
-  consecutive `low_progress` steps get a `stall ×N` bracket. An injected
-  observation is rendered in a quarantined ```data fence (mirrors `PROMPT_V2`),
-  never as a normal line.
-- **Right** — the generated insight (`GET /sessions/:id/insight`, on the
-  button). Confidence meter with a cap tick + a client-side cap ledger, friction
-  points (click a `step N` ref to jump to it), and the recommended follow-up.
+- **Center** — a **features strip** (`GET /sessions/:id/features`) showing the
+  backend's deterministic numbers (progress_ratio, loop, stall, conflicts,
+  injections, terminal) plus an **ingest log** (`GET /sessions/:id/rejects`) with
+  the closed reject enum (`duplicate_event`, `conflicting_step · kept`, …). Below
+  it the trajectory (`GET /sessions/:id/events`): friction steps dash the rail,
+  repeats get a `loop ×N` badge, consecutive `low_progress` a `stall ×N` bracket,
+  and a kept same-step conflict draws a forked node. An injected observation is
+  rendered in a quarantined ```data fence (mirrors `PROMPT_V2`), never as a line.
+- **Right** — the generated insight (`GET /sessions/:id/insight`). Confidence
+  meter + cap ledger using the **exact `guards.py` formula** fed by real
+  `features`/`rejects` (no more estimated terms). The seal shows the real
+  `validation_status` from `GET /sessions/:id/runs`, and a run history lists the
+  persisted `insight_runs`.
+
+### ingest
+
+The top-bar **ingest** button opens a panel that POSTs a raw event array to
+`/trajectories` and shows the `accepted/rejected/flagged` summary. Ingest the
+same payload twice to watch dedupe drop every event as `duplicate_event`; load
+the conflict preset to see the kept-conflict + integrity path.
 
 ### compare v1↔v2
 

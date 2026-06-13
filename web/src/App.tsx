@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "./api";
-import type { AgentEvent, Insight, SessionSummary } from "./types";
+import { CONFLICT_EXAMPLE, SAMPLE_TRAJECTORY } from "./examples";
+import type {
+  AgentEvent,
+  Features,
+  IngestSummary,
+  Insight,
+  RejectRow,
+  RunRow,
+  SessionSummary,
+} from "./types";
 
 /* ============================================================== helpers === */
 
@@ -104,10 +113,15 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
+  const [features, setFeatures] = useState<Features | null>(null);
+  const [rejects, setRejects] = useState<RejectRow[]>([]);
+  const [runs, setRuns] = useState<RunRow[]>([]);
 
   const [insight, setInsight] = useState<Insight | null>(null);
   const [insightLoading, setInsightLoading] = useState(false);
   const [insightError, setInsightError] = useState<string | null>(null);
+
+  const [ingestOpen, setIngestOpen] = useState(false);
 
   const loadSessions = useCallback(async () => {
     setListLoading(true);
@@ -132,9 +146,21 @@ export default function App() {
     setCmp({ v1: null, v2: null });
     setCmpError(null);
     setEvents([]);
+    setFeatures(null);
+    setRejects([]);
+    setRuns([]);
     setEventsLoading(true);
     try {
-      setEvents(await api.getEvents(id));
+      const [ev, ft, rj, rn] = await Promise.all([
+        api.getEvents(id),
+        api.getFeatures(id),
+        api.getRejects(id),
+        api.getRuns(id),
+      ]);
+      setEvents(ev);
+      setFeatures(ft);
+      setRejects(rj);
+      setRuns(rn);
     } catch (e) {
       setInsightError(e instanceof ApiError ? e.message : String(e));
     } finally {
@@ -142,31 +168,47 @@ export default function App() {
     }
   }, []);
 
-  const runCompare = useCallback(async (id: string) => {
-    setCmpLoading(true);
-    setCmpError(null);
-    setCmp({ v1: null, v2: null });
+  const refreshRuns = useCallback(async (id: string) => {
     try {
-      const [v1, v2] = await Promise.all([api.getInsight(id, "v1"), api.getInsight(id, "v2")]);
-      setCmp({ v1, v2 });
-    } catch (e) {
-      setCmpError(e instanceof ApiError ? e.message : String(e));
-    } finally {
-      setCmpLoading(false);
+      setRuns(await api.getRuns(id));
+    } catch {
+      /* non-fatal — runs history is supplementary */
     }
   }, []);
 
-  const generateInsight = useCallback(async (id: string) => {
-    setInsightLoading(true);
-    setInsightError(null);
-    try {
-      setInsight(await api.getInsight(id));
-    } catch (e) {
-      setInsightError(e instanceof ApiError ? e.message : String(e));
-    } finally {
-      setInsightLoading(false);
-    }
-  }, []);
+  const runCompare = useCallback(
+    async (id: string) => {
+      setCmpLoading(true);
+      setCmpError(null);
+      setCmp({ v1: null, v2: null });
+      try {
+        const [v1, v2] = await Promise.all([api.getInsight(id, "v1"), api.getInsight(id, "v2")]);
+        setCmp({ v1, v2 });
+        void refreshRuns(id);
+      } catch (e) {
+        setCmpError(e instanceof ApiError ? e.message : String(e));
+      } finally {
+        setCmpLoading(false);
+      }
+    },
+    [refreshRuns],
+  );
+
+  const generateInsight = useCallback(
+    async (id: string) => {
+      setInsightLoading(true);
+      setInsightError(null);
+      try {
+        setInsight(await api.getInsight(id));
+        void refreshRuns(id);
+      } catch (e) {
+        setInsightError(e instanceof ApiError ? e.message : String(e));
+      } finally {
+        setInsightLoading(false);
+      }
+    },
+    [refreshRuns],
+  );
 
   const selected = useMemo(
     () => sessions.find((s) => s.id === selectedId) ?? null,
@@ -266,6 +308,9 @@ export default function App() {
           <Count k="injections" v={totals.injections} tone={totals.injections ? "inj" : undefined} />
         </div>
 
+        <button className="btn btn--ghost" onClick={() => setIngestOpen(true)}>
+          <span className="btn__glyph" aria-hidden>＋</span> ingest
+        </button>
         <button className="btn btn--ghost" onClick={() => void loadSessions()} disabled={listLoading}>
           <span className={`btn__glyph ${listLoading ? "spin" : ""}`} aria-hidden>↻</span> refresh
         </button>
@@ -348,6 +393,8 @@ export default function App() {
             cmp={cmp}
             loading={cmpLoading}
             error={cmpError}
+            conflict={features?.conflict_count ?? 0}
+            rejects={rejects.length}
             onRun={() => selected && void runCompare(selected.id)}
           />
         ) : (
@@ -369,8 +416,10 @@ export default function App() {
                   <span>{span(selected.first_ts, selected.last_ts)} span</span>
                   <span className="detail__sep">·</span>
                   <span>{fmtAbs(selected.first_ts)}</span>
-                  {terminal && (
-                    <span className={`enum enum--${statusKey(terminal)} detail__term`}>{terminal}</span>
+                  {(features?.terminal_status ?? terminal) && (
+                    <span className={`enum enum--${statusKey(features?.terminal_status ?? terminal)} detail__term`}>
+                      {features?.terminal_status ?? terminal}
+                    </span>
                   )}
                 </div>
                 <div className="detail__badges">
@@ -386,6 +435,8 @@ export default function App() {
                   )}
                 </div>
               </div>
+
+              {features && <SignalsPanel features={features} rejects={rejects} />}
 
               <div className="trace">
                 {eventsLoading ? (
@@ -460,7 +511,11 @@ export default function App() {
             <div className="ipanel">
               <div className="ipanel__head">
                 <span className="ipanel__label">insight</span>
-                {insight && <span className="seal">generated</span>}
+                {insight &&
+                  (() => {
+                    const st = runs[runs.length - 1]?.validation_status ?? "generated";
+                    return <span className={`seal seal--${st}`}>{sealLabel(st)}</span>;
+                  })()}
               </div>
 
               {!insight && !insightLoading && (
@@ -473,9 +528,7 @@ export default function App() {
                     generate insight
                   </button>
                   <p className="igen__note">one LLM call · features are deterministic</p>
-                  {selected.insight_runs > 0 && (
-                    <p className="igen__runs">{selected.insight_runs} prior run(s)</p>
-                  )}
+                  {runs.length > 0 && <p className="igen__runs">{runs.length} prior run(s)</p>}
                 </div>
               )}
 
@@ -491,8 +544,9 @@ export default function App() {
                 <div className="insight">
                   <ConfidenceMeter
                     value={insight.confidence}
-                    injection={selected.injection_count}
-                    conflict={selected.integrity_flag > 0 ? 1 : 0}
+                    injection={features?.injection_count ?? selected.injection_count}
+                    conflict={features?.conflict_count ?? 0}
+                    rejects={rejects.length}
                   />
 
                   <p className="insight__summary">{insight.summary}</p>
@@ -531,12 +585,23 @@ export default function App() {
                   </button>
                 </div>
               )}
+              {runs.length > 0 && <RunsHistory runs={runs} />}
             </div>
           )}
         </aside>
         </>
         )}
       </main>
+
+      {ingestOpen && (
+        <IngestModal
+          onClose={() => setIngestOpen(false)}
+          onIngested={(touched) => {
+            void loadSessions();
+            if (touched.length === 1) void selectSession(touched[0]);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -571,19 +636,20 @@ function ConfidenceMeter({
   value,
   injection,
   conflict,
+  rejects,
   compact = false,
 }: {
   value: number;
   injection: number;
   conflict: number;
+  rejects: number;
   compact?: boolean;
 }) {
   const SEG = 20;
   const filled = Math.round(value * SEG);
-  // Known cap ceiling, derived client-side from real fields. The reject term
-  // (guards.py: −0.1·rejects) is NOT exposed by the API, so it's shown but not
-  // summed — the backend applies the authoritative cap.
-  const ceiling = Math.max(0.05, 1 - 0.2 * injection - 0.2 * conflict);
+  // The exact guards.py cap formula, now fed by real backend fields:
+  // cap = max(0.05, 1 − 0.2·injection − 0.2·conflict − 0.1·rejects).
+  const ceiling = Math.max(0.05, 1 - 0.2 * injection - 0.2 * conflict - 0.1 * rejects);
   const tickPct = ceiling * 100;
   return (
     <div className="conf">
@@ -598,7 +664,7 @@ function ConfidenceMeter({
         <span
           className={`conf__tick ${injection ? "conf__tick--inj" : ""}`}
           style={{ left: `${tickPct}%` }}
-          title={`known ceiling ≈ ${ceiling.toFixed(2)}`}
+          title={`cap ceiling = ${ceiling.toFixed(2)}`}
         />
       </div>
       {compact ? null : (
@@ -607,12 +673,12 @@ function ConfidenceMeter({
         <Line k="base" v="1.00" />
         <Line k={`− injection ×${injection}`} v={(0.2 * injection).toFixed(2)} dim={!injection} />
         <Line k={`− conflict ×${conflict}`} v={(0.2 * conflict).toFixed(2)} dim={!conflict} />
-        <Line k="− rejects ~" v="n/a" est />
+        <Line k={`− rejects ×${rejects}`} v={(0.1 * rejects).toFixed(2)} dim={!rejects} />
         <div className="ledger__rule" />
-        <Line k="ceiling (known)" v={ceiling.toFixed(2)} accent />
+        <Line k="cap ceiling" v={ceiling.toFixed(2)} accent />
       </div>
       <p className="ledger__foot">
-        ≈ derived client-side · backend applies the authoritative cap (reject count not exposed)
+        guards.py: cap = max(0.05, 1 − 0.2·injection − 0.2·conflict − 0.1·rejects)
       </p>
       </>
       )}
@@ -625,6 +691,184 @@ function Line({ k, v, accent, dim, est }: { k: string; v: string; accent?: boole
     <div className={`lline ${accent ? "lline--accent" : ""} ${dim ? "lline--dim" : ""} ${est ? "lline--est" : ""}`}>
       <span>{k}</span>
       <span>{v}</span>
+    </div>
+  );
+}
+
+function sealLabel(status: string): string {
+  return status === "retried_valid" ? "retried" : status;
+}
+
+function Sig({ k, v }: { k: string; v: string | number }) {
+  return (
+    <div className="sig">
+      <span className="sig__v">{v}</span>
+      <span className="sig__k">{k}</span>
+    </div>
+  );
+}
+
+function SignalsPanel({ features, rejects }: { features: Features; rejects: RejectRow[] }) {
+  const byReason = rejects.reduce<Record<string, number>>((m, r) => {
+    m[r.reason] = (m[r.reason] || 0) + 1;
+    return m;
+  }, {});
+  return (
+    <div className="signals">
+      <div className="signals__row">
+        <span className="signals__label">features · backend</span>
+        <div className="signals__metrics">
+          <Sig k="progress" v={`${Math.round(features.progress_ratio * 100)}%`} />
+          <Sig k="loop" v={features.loop_score} />
+          <Sig k="stall" v={features.stall_streak} />
+          <Sig k="conflicts" v={features.conflict_count} />
+          <Sig k="injections" v={features.injection_count} />
+          <Sig k="terminal" v={features.terminal_status ?? "—"} />
+        </div>
+      </div>
+      <div className="signals__row">
+        <span className="signals__label">ingest log</span>
+        <div className="signals__rejects">
+          {rejects.length === 0 ? (
+            <span className="signals__none">0 dropped · all events clean</span>
+          ) : (
+            Object.entries(byReason).map(([reason, n]) => (
+              <span key={reason} className={`rchip ${reason === "conflicting_step" ? "rchip--kept" : ""}`}>
+                {reason} ×{n}
+                {reason === "conflicting_step" ? " · kept" : ""}
+              </span>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunsHistory({ runs }: { runs: RunRow[] }) {
+  return (
+    <div className="runs">
+      <div className="runs__label">
+        insight_runs <span className="runs__n">{runs.length}</span>
+      </div>
+      <ul className="runs__list">
+        {[...runs].reverse().map((r) => (
+          <li key={r.id} className="runrow">
+            <span className="runrow__ver">{r.prompt_version ?? "—"}</span>
+            <span className={`runrow__st runrow__st--${r.validation_status ?? "na"}`}>
+              {sealLabel(r.validation_status ?? "—")}
+            </span>
+            <span className="runrow__lat">{r.latency_ms != null ? `${r.latency_ms}ms` : "—"}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function IngestModal({
+  onClose,
+  onIngested,
+}: {
+  onClose: () => void;
+  onIngested: (touched: string[]) => void;
+}) {
+  const [text, setText] = useState(SAMPLE_TRAJECTORY);
+  const [result, setResult] = useState<IngestSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError(null);
+    setResult(null);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      setError(`invalid JSON: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (!Array.isArray(parsed)) {
+      setError("expected a JSON array of events");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api.ingest(parsed);
+      setResult(res);
+      onIngested(res.sessions);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal" onClick={onClose}>
+      <div className="modal__panel" onClick={(e) => e.stopPropagation()}>
+        <div className="modal__head">
+          <span className="modal__title">ingest · POST /trajectories</span>
+          <button className="modal__x" onClick={onClose} aria-label="close">
+            ✕
+          </button>
+        </div>
+        <p className="modal__hint">
+          Paste a JSON array of raw events. Ingest is deterministic — it validates shape, dedupes by
+          content hash, keeps conflicts (flagging integrity), and scans observations for injection.
+          Ingest the same payload twice to watch dedupe drop every event as <code>duplicate_event</code>.
+        </p>
+        <div className="modal__presets">
+          <button
+            className="chip"
+            onClick={() => {
+              setText(SAMPLE_TRAJECTORY);
+              setResult(null);
+              setError(null);
+            }}
+          >
+            load sample
+          </button>
+          <button
+            className="chip"
+            onClick={() => {
+              setText(CONFLICT_EXAMPLE);
+              setResult(null);
+              setError(null);
+            }}
+          >
+            load conflict
+          </button>
+        </div>
+        <textarea
+          className="modal__ta"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          spellCheck={false}
+        />
+        {error && (
+          <div className="errbox">
+            <strong>ingest error</strong>
+            <span>{error}</span>
+          </div>
+        )}
+        {result && (
+          <div className="ingres">
+            <Sig k="accepted" v={result.accepted} />
+            <Sig k="rejected" v={result.rejected} />
+            <Sig k="flagged" v={result.flagged} />
+            <div className="ingres__sessions">sessions: {result.sessions.join(", ") || "—"}</div>
+          </div>
+        )}
+        <div className="modal__actions">
+          <button className="btn btn--accent" onClick={() => void submit()} disabled={busy}>
+            {busy ? "ingesting…" : "ingest"}
+          </button>
+          <button className="btn btn--ghost" onClick={onClose}>
+            close
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -645,12 +889,16 @@ function CompareView({
   cmp,
   loading,
   error,
+  conflict,
+  rejects,
   onRun,
 }: {
   session: SessionSummary | null;
   cmp: CmpState;
   loading: boolean;
   error: string | null;
+  conflict: number;
+  rejects: number;
   onRun: () => void;
 }) {
   if (!session) {
@@ -664,7 +912,6 @@ function CompareView({
     );
   }
   const inj = session.injection_count;
-  const con = session.integrity_flag > 0 ? 1 : 0;
   const ready = !!cmp.v1 && !!cmp.v2;
   return (
     <section className="compare" aria-label="Prompt comparison">
@@ -701,8 +948,8 @@ function CompareView({
         <>
           <DiffStrip v1={cmp.v1!} v2={cmp.v2!} />
           <div className="compare__cols">
-            <PromptCard label="v1" sub="plain" insight={cmp.v1!} injection={inj} conflict={con} />
-            <PromptCard label="v2" sub="injection-hardened" insight={cmp.v2!} injection={inj} conflict={con} />
+            <PromptCard label="v1" sub="plain" insight={cmp.v1!} injection={inj} conflict={conflict} rejects={rejects} />
+            <PromptCard label="v2" sub="injection-hardened" insight={cmp.v2!} injection={inj} conflict={conflict} rejects={rejects} />
           </div>
         </>
       )}
@@ -763,12 +1010,14 @@ function PromptCard({
   insight,
   injection,
   conflict,
+  rejects,
 }: {
   label: string;
   sub: string;
   insight: Insight;
   injection: number;
   conflict: number;
+  rejects: number;
 }) {
   const names = namesInjection(insight);
   return (
@@ -780,7 +1029,7 @@ function PromptCard({
           {names ? "names injection" : "omits injection"}
         </span>
       </div>
-      <ConfidenceMeter value={insight.confidence} injection={injection} conflict={conflict} compact />
+      <ConfidenceMeter value={insight.confidence} injection={injection} conflict={conflict} rejects={rejects} compact />
       <p className="insight__summary">{insight.summary}</p>
       <div className="insight__block">
         <div className="insight__bh">

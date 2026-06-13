@@ -1,4 +1,12 @@
-import type { AgentEvent, Insight, SessionSummary } from "./types";
+import type {
+  AgentEvent,
+  Features,
+  IngestSummary,
+  Insight,
+  RejectRow,
+  RunRow,
+  SessionSummary,
+} from "./types";
 
 // Same-origin via the Vite dev proxy by default; override for a hosted backend.
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "/api";
@@ -32,13 +40,22 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type PromptVersion = "v1" | "v2";
 
+const enc = encodeURIComponent;
+
 export const api = {
   listSessions: () => req<SessionSummary[]>("/sessions"),
-  getEvents: (id: string) => req<AgentEvent[]>(`/sessions/${encodeURIComponent(id)}/events`),
+  getEvents: (id: string) => req<AgentEvent[]>(`/sessions/${enc(id)}/events`),
+  getFeatures: (id: string) => req<Features>(`/sessions/${enc(id)}/features`),
+  getRejects: (id: string) => req<RejectRow[]>(`/sessions/${enc(id)}/rejects`),
+  getRuns: (id: string) => req<RunRow[]>(`/sessions/${enc(id)}/runs`),
   getInsight: (id: string, version?: PromptVersion) =>
-    req<Insight>(
-      `/sessions/${encodeURIComponent(id)}/insight${version ? `?version=${version}` : ""}`,
-    ),
+    req<Insight>(`/sessions/${enc(id)}/insight${version ? `?version=${version}` : ""}`),
+  ingest: (events: unknown[]) =>
+    req<IngestSummary>("/trajectories", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(events),
+    }),
 };
 
 export { ApiError };
