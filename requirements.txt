@@ -1,0 +1,6 @@
+fastapi==0.128.8
+uvicorn[standard]==0.39.0
+pydantic==2.13.4
+anthropic==0.109.1
+pytest==8.4.2
+httpx==0.28.1

@@ -1,0 +1,21 @@
+# python
+.venv/
+.env
+__pycache__/
+*.pyc
+data/*.db
+.pytest_cache/
+.gstack/
+
+# node / frontend
+node_modules/
+web/dist/
+*.tsbuildinfo
+*.local
+
+# deploy
+.vercel/
+.railway/
+
+# os
+.DS_Store
