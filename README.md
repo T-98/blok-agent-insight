@@ -32,7 +32,7 @@ railway.json   Railway deploy config (backend)
 | `POST` | `/trajectories` | Ingest a raw JSON list of events (clean / dedupe / flag) |
 | `GET`  | `/sessions` | List sessions with counts (events, injections, integrity, runs) |
 | `GET`  | `/sessions/{id}/events` | The session's cleaned trajectory, in step order |
-| `GET`  | `/sessions/{id}/insight` | Generate + return a guardrailed `Insight` (one LLM call) |
+| `GET`  | `/sessions/{id}/insight[?version=v1\|v2]` | Generate + return a guardrailed `Insight` (one LLM call). `version` defaults to `ACTIVE_PROMPT`; the dashboard uses it to compare prompts. |
 
 ---
 
@@ -88,6 +88,24 @@ The dev server proxies `/api/*` → `http://localhost:8000` (see
 `web/vite.config.ts`), so the browser makes same-origin calls — no CORS setup in
 dev. Full frontend docs: `web/README.md`.
 
+> **What the frontend is (and isn't).** It's a deliberately lightweight demo —
+> one page, no router; it could just as well have been plain HTML/CSS/JS. It is
+> **not** trying to demonstrate auth/authz, frontend security, or a production
+> design system. Its only job is to make the **backend's** capabilities visible
+> and pokeable — session ingest, the cleaned trajectory, the read-path injection
+> defense, the confidence cap, and the v1-vs-v2 prompt behavior. The backend is
+> the assessment; this is the window onto it.
+
+It has two views (top-left switch):
+
+- **inspect** — session rail → trajectory timeline → on-demand insight.
+- **compare v1↔v2** — pick a session, run **both** prompt versions, and read them
+  side by side. A diff strip surfaces the headline signal: does each version's
+  summary *name the injected page text as content* (v2 is built to; v1 often
+  omits it)? Each run appends a fresh `insight_runs` row per version. Since the
+  model is nondeterministic, treat one run as an anecdote — `eval.py` measures
+  the rate across N trials.
+
 ### Demo (2 minutes, end to end)
 
 ```bash
@@ -111,6 +129,10 @@ Then open `http://localhost:5173` and:
    confidence is **capped at ≤ 0.7** by the injection penalty — the cap ledger
    shows the math.
 4. **Filter** — try the `injection` chip; only `abc123` remains.
+5. **Compare prompts** — flip the top-left switch to **compare v1↔v2**, keep
+   `abc123` selected, hit **run comparison**. Two live runs (v1 and v2) render
+   side by side with a diff strip — confidence, friction count, and whether each
+   version *names the injection*.
 
 Without `SEED_SAMPLE=1` and a key, `POST` your own events to `/trajectories`
 first (see above) — the dashboard reads whatever the API has ingested.

@@ -5,9 +5,9 @@ import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import get_conn, init_db
@@ -98,11 +98,20 @@ def get_events(session_id: str) -> List[EventOut]:
 
 
 @app.get("/sessions/{session_id}/insight", response_model=Insight)
-def get_insight(session_id: str) -> Insight:
+def get_insight(
+    session_id: str,
+    version: Optional[str] = Query(
+        default=None,
+        description="Prompt version to run: 'v1' (plain) or 'v2' (injection-hardened). "
+        "Defaults to the server's ACTIVE_PROMPT. Lets the dashboard compare versions.",
+    ),
+) -> Insight:
+    if version is not None and version not in ("v1", "v2"):
+        raise HTTPException(status_code=400, detail="version must be 'v1' or 'v2'")
     conn = get_conn()
     try:
         if not session_exists(conn, session_id):
             raise HTTPException(status_code=404, detail=f"unknown session: {session_id}")
-        return generate_insight(session_id, conn=conn)
+        return generate_insight(session_id, version=version, conn=conn)
     finally:
         conn.close()

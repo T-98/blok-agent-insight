@@ -30,10 +30,15 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export type PromptVersion = "v1" | "v2";
+
 export const api = {
   listSessions: () => req<SessionSummary[]>("/sessions"),
   getEvents: (id: string) => req<AgentEvent[]>(`/sessions/${encodeURIComponent(id)}/events`),
-  getInsight: (id: string) => req<Insight>(`/sessions/${encodeURIComponent(id)}/insight`),
+  getInsight: (id: string, version?: PromptVersion) =>
+    req<Insight>(
+      `/sessions/${encodeURIComponent(id)}/insight${version ? `?version=${version}` : ""}`,
+    ),
 };
 
 export { ApiError };

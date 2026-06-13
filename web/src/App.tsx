@@ -74,6 +74,16 @@ function toNodes(events: AgentEvent[]): StepNode[] {
   return nodes;
 }
 
+// The headline v1-vs-v2 difference: does the narration acknowledge the injected
+// page text as content (rather than getting steered by it)? Pure text heuristic.
+const _INJ_RE = /injection|not followed|ignore previous|instruction|prompt[- ]?inject/i;
+function namesInjection(ins: Insight): boolean {
+  return _INJ_RE.test(ins.summary + " " + ins.friction_points.map((f) => f.description).join(" "));
+}
+
+type View = "inspect" | "compare";
+type CmpState = { v1: Insight | null; v2: Insight | null };
+
 /* ================================================================ app === */
 
 type Filter = "all" | "flagged" | "injection";
@@ -85,6 +95,11 @@ export default function App() {
 
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  const [view, setView] = useState<View>("inspect");
+
+  const [cmp, setCmp] = useState<CmpState>({ v1: null, v2: null });
+  const [cmpLoading, setCmpLoading] = useState(false);
+  const [cmpError, setCmpError] = useState<string | null>(null);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
@@ -114,6 +129,8 @@ export default function App() {
     setSelectedId(id);
     setInsight(null);
     setInsightError(null);
+    setCmp({ v1: null, v2: null });
+    setCmpError(null);
     setEvents([]);
     setEventsLoading(true);
     try {
@@ -122,6 +139,20 @@ export default function App() {
       setInsightError(e instanceof ApiError ? e.message : String(e));
     } finally {
       setEventsLoading(false);
+    }
+  }, []);
+
+  const runCompare = useCallback(async (id: string) => {
+    setCmpLoading(true);
+    setCmpError(null);
+    setCmp({ v1: null, v2: null });
+    try {
+      const [v1, v2] = await Promise.all([api.getInsight(id, "v1"), api.getInsight(id, "v2")]);
+      setCmp({ v1, v2 });
+    } catch (e) {
+      setCmpError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setCmpLoading(false);
     }
   }, []);
 
@@ -209,6 +240,25 @@ export default function App() {
           <span className="wordmark__tag">agent insight console</span>
         </div>
 
+        <div className="viewswitch" role="tablist" aria-label="View">
+          <button
+            className={`viewswitch__btn ${view === "inspect" ? "viewswitch__btn--on" : ""}`}
+            onClick={() => setView("inspect")}
+            role="tab"
+            aria-selected={view === "inspect"}
+          >
+            inspect
+          </button>
+          <button
+            className={`viewswitch__btn ${view === "compare" ? "viewswitch__btn--on" : ""}`}
+            onClick={() => setView("compare")}
+            role="tab"
+            aria-selected={view === "compare"}
+          >
+            compare v1↔v2
+          </button>
+        </div>
+
         <div className="counts">
           <Count k="sessions" v={totals.sessions} />
           <Count k="events" v={totals.events} />
@@ -221,7 +271,7 @@ export default function App() {
         </button>
       </header>
 
-      <main className="grid">
+      <main className={`grid ${view === "compare" ? "grid--compare" : ""}`}>
         {/* ------------------------------------------------------ left rail */}
         <aside className="rail" aria-label="Sessions">
           <div className="rail__filter">
@@ -292,6 +342,16 @@ export default function App() {
           </div>
         </aside>
 
+        {view === "compare" ? (
+          <CompareView
+            session={selected}
+            cmp={cmp}
+            loading={cmpLoading}
+            error={cmpError}
+            onRun={() => selected && void runCompare(selected.id)}
+          />
+        ) : (
+        <>
         {/* -------------------------------------------------------- detail */}
         <section className="detail" aria-label="Trajectory">
           {!selected && <DetailEmpty />}
@@ -474,6 +534,8 @@ export default function App() {
             </div>
           )}
         </aside>
+        </>
+        )}
       </main>
     </div>
   );
@@ -509,10 +571,12 @@ function ConfidenceMeter({
   value,
   injection,
   conflict,
+  compact = false,
 }: {
   value: number;
   injection: number;
   conflict: number;
+  compact?: boolean;
 }) {
   const SEG = 20;
   const filled = Math.round(value * SEG);
@@ -537,6 +601,8 @@ function ConfidenceMeter({
           title={`known ceiling ≈ ${ceiling.toFixed(2)}`}
         />
       </div>
+      {compact ? null : (
+      <>
       <div className="ledger">
         <Line k="base" v="1.00" />
         <Line k={`− injection ×${injection}`} v={(0.2 * injection).toFixed(2)} dim={!injection} />
@@ -548,6 +614,8 @@ function ConfidenceMeter({
       <p className="ledger__foot">
         ≈ derived client-side · backend applies the authoritative cap (reject count not exposed)
       </p>
+      </>
+      )}
     </div>
   );
 }
@@ -566,6 +634,185 @@ function DetailEmpty() {
     <div className="detail-empty">
       <h2>Select a session</h2>
       <p>←&nbsp;&nbsp;pick a row to read its trajectory</p>
+    </div>
+  );
+}
+
+/* -------------------------------------------------- prompt compare view === */
+
+function CompareView({
+  session,
+  cmp,
+  loading,
+  error,
+  onRun,
+}: {
+  session: SessionSummary | null;
+  cmp: CmpState;
+  loading: boolean;
+  error: string | null;
+  onRun: () => void;
+}) {
+  if (!session) {
+    return (
+      <section className="compare compare--empty">
+        <div className="detail-empty">
+          <h2>Select a session</h2>
+          <p>←&nbsp;&nbsp;pick a row, then run the v1 vs v2 comparison</p>
+        </div>
+      </section>
+    );
+  }
+  const inj = session.injection_count;
+  const con = session.integrity_flag > 0 ? 1 : 0;
+  const ready = !!cmp.v1 && !!cmp.v2;
+  return (
+    <section className="compare" aria-label="Prompt comparison">
+      <div className="compare__head">
+        <div>
+          <h2 className="compare__id">
+            <span className="detail__sid">sid:</span>
+            {session.id}
+          </h2>
+          <p className="compare__sub">
+            prompt comparison · <b>PROMPT_V1</b> (plain) vs <b>PROMPT_V2</b> (injection-hardened)
+          </p>
+        </div>
+        <button
+          className="btn btn--accent"
+          onClick={onRun}
+          disabled={loading}
+          title="runs two fresh insight_runs — one per prompt version"
+        >
+          {loading ? "running v1 + v2…" : ready ? "↻ re-run both" : "run comparison"}
+        </button>
+      </div>
+
+      {error && <ErrorBox title="comparison failed" detail={error} />}
+
+      {loading && (
+        <div className="compare__cols">
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
+      )}
+
+      {!loading && ready && (
+        <>
+          <DiffStrip v1={cmp.v1!} v2={cmp.v2!} />
+          <div className="compare__cols">
+            <PromptCard label="v1" sub="plain" insight={cmp.v1!} injection={inj} conflict={con} />
+            <PromptCard label="v2" sub="injection-hardened" insight={cmp.v2!} injection={inj} conflict={con} />
+          </div>
+        </>
+      )}
+
+      {!loading && !ready && !error && (
+        <div className="compare__hint">
+          <p>
+            Run both prompt versions against <strong>{session.id}</strong> and read them side by side.
+          </p>
+          <p className="muted">
+            Each click appends two fresh <code>insight_runs</code> rows (one per version). The signal
+            to watch: whether the summary <em>names the injected page text as content</em> — v2 is
+            built to, v1 often omits it. LLMs are nondeterministic, so a single run is an anecdote;
+            <code> eval.py</code> measures the rate across N trials.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DiffStrip({ v1, v2 }: { v1: Insight; v2: Insight }) {
+  const ni1 = namesInjection(v1);
+  const ni2 = namesInjection(v2);
+  return (
+    <table className="diff">
+      <thead>
+        <tr>
+          <th>metric</th>
+          <th>v1</th>
+          <th>v2</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>confidence</td>
+          <td>{v1.confidence.toFixed(2)}</td>
+          <td>{v2.confidence.toFixed(2)}</td>
+        </tr>
+        <tr className="diff__key">
+          <td>names injection</td>
+          <td className={ni1 ? "diff--good" : "diff--bad"}>{ni1 ? "✓ yes" : "✗ no"}</td>
+          <td className={ni2 ? "diff--good" : "diff--bad"}>{ni2 ? "✓ yes" : "✗ no"}</td>
+        </tr>
+        <tr>
+          <td>friction points</td>
+          <td>{v1.friction_points.length}</td>
+          <td>{v2.friction_points.length}</td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+function PromptCard({
+  label,
+  sub,
+  insight,
+  injection,
+  conflict,
+}: {
+  label: string;
+  sub: string;
+  insight: Insight;
+  injection: number;
+  conflict: number;
+}) {
+  const names = namesInjection(insight);
+  return (
+    <div className="pcard">
+      <div className="pcard__head">
+        <span className="pcard__label">PROMPT_{label.toUpperCase()}</span>
+        <span className="pcard__sub">{sub}</span>
+        <span className={`pcard__flag ${names ? "pcard__flag--good" : "pcard__flag--bad"}`}>
+          {names ? "names injection" : "omits injection"}
+        </span>
+      </div>
+      <ConfidenceMeter value={insight.confidence} injection={injection} conflict={conflict} compact />
+      <p className="insight__summary">{insight.summary}</p>
+      <div className="insight__block">
+        <div className="insight__bh">
+          friction <span className="insight__n">{insight.friction_points.length}</span>
+        </div>
+        {insight.friction_points.length === 0 ? (
+          <p className="muted">none detected</p>
+        ) : (
+          <ul className="friction">
+            {insight.friction_points.map((f, i) => (
+              <li key={i} className="friction__item">
+                <span className="stepref stepref--static">step {f.step}</span>
+                <span>{f.description}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="followup">
+        <span className="followup__label">recommended follow-up</span>
+        <p>{insight.recommended_follow_up}</p>
+      </div>
+    </div>
+  );
+}
+
+function SkeletonCard() {
+  return (
+    <div className="pcard pcard--sk">
+      <div className="sk sk--row" style={{ height: 28 }} />
+      <div className="sk sk--row" style={{ height: 60 }} />
+      <div className="sk sk--row" style={{ height: 40 }} />
     </div>
   );
 }
