@@ -84,7 +84,14 @@ def main() -> None:
     finally:
         conn.close()
 
-    # results[version][session] = (passed_trials, total_trials)
+    # results[version][session] = [passed_trials, total_trials]. Nested dict:
+    # outer key = prompt version, inner key = session id, value = [passed, total].
+    # Starts all-zero; after N=10 trials it looks like:
+    #   {
+    #     "v1": {"abc123": [9, 10], "xyz789": [10, 10], "loop456": [8, 10]},
+    #     "v2": {"abc123": [10, 10], "xyz789": [10, 10], "loop456": [10, 10]},
+    #   }
+    # i.e. results["v2"]["abc123"] == [10, 10] means 10 of 10 trials passed.
     results: Dict[str, Dict[str, List[int]]] = {v: {s: [0, 0] for s in SESSIONS} for v in VERSIONS}
 
     for version in VERSIONS:

@@ -140,15 +140,15 @@ def _validate_and_guard(
 ) -> Tuple[Optional[Insight], str]:
     """Parse -> schema-validate -> guards 1 & 2. Returns (insight, '') on full
     pass, else (None, failure_message)."""
-    try:
+    try: # Check if llm response has a valid JSON shape
         data = json.loads(_extract_json(raw))
     except (json.JSONDecodeError, ValueError) as exc:
         return None, f"output was not valid JSON ({exc})"
-    try:
+    try: # Check if the LLM response JSON is a valid Insight shape
         insight = Insight.model_validate(data)
     except Exception as exc:  # pydantic ValidationError
         return None, f"output did not match the Insight schema ({exc})"
-
+    # Check that friction points exist in the same shape as defined in FrictionPoint model: including a step and description
     ok, msg = contradiction_guard(insight, features)
     if not ok:
         return None, msg

@@ -42,8 +42,10 @@ def contradiction_guard(insight: Insight, features: Dict[str, Any]) -> Tuple[boo
         or features.get("injection_count", 0) > 0
         or any(fe["status"] == "blocked" for fe in features.get("friction_events", []))
     )
+
     if not triggered:
         return True, ""
+    
     claims_success = any(p.search(insight.summary) for p in _SUCCESS_PATTERNS)
     if claims_success and not insight.friction_points:
         return (
