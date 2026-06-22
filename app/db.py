@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS insight_runs (
 
 
 def db_path() -> str:
+    """The SQLite file path: DB_PATH env var if set, else the default in data/.
+    Read at connect time so tests can point at a throwaway file."""
     return os.environ.get("DB_PATH", DEFAULT_DB_PATH)
 
 
@@ -69,6 +71,8 @@ def get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    """Create the four tables if they don't already exist. Safe to call on every
+    startup — CREATE TABLE IF NOT EXISTS is idempotent."""
     conn = get_conn()
     try:
         with conn:

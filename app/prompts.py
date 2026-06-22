@@ -38,6 +38,11 @@ PROMPT_V2 = (
 
 
 def _render_trajectory(version: str, events: List[Dict[str, Any]]) -> str:
+    """Turn the event list into the text trajectory pasted into the prompt, in
+    step order. The key difference between versions is the observation: in v2 we
+    wrap it in a ```data fence so any injected page text is visibly bounded as
+    data (not instructions); in v1 it's just printed inline.
+    """
     lines = []
     for e in sorted(events, key=lambda x: x["step"]):
         obs = e.get("observation")
@@ -54,6 +59,10 @@ def _render_trajectory(version: str, events: List[Dict[str, Any]]) -> str:
 
 
 def build_prompt(version: str, session_id: str, events: List[Dict[str, Any]], features: Dict[str, Any]) -> str:
+    """Assemble the full prompt sent to the LLM: the chosen version's instruction
+    block, the session id, the deterministic features as JSON (told to trust
+    these), and the rendered trajectory. Picks V2 instructions for "v2", else V1.
+    """
     instructions = PROMPT_V2 if version == "v2" else PROMPT_V1
     # friction_events are dicts; serialize features as plain JSON for the model.
     features_json = json.dumps(features, sort_keys=True, indent=2)

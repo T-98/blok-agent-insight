@@ -20,9 +20,23 @@ _SUCCESS_PATTERNS = [
 
 
 def contradiction_guard(insight: Insight, features: Dict[str, Any]) -> Tuple[bool, str]:
-    """Fail if the session clearly hit trouble (terminal blocked, injection, or
-    any blocked event) yet the summary claims clean success with no friction
-    points listed."""
+    """Catch the model claiming everything went fine when it clearly didn't.
+
+    This guard only kicks in if the session actually had trouble: it ended
+    blocked, or it had an injection flag, or some event was blocked. If the
+    session was clean, the guard always passes and we stop here.
+
+    When it did have trouble, we look at the LLM's summary text:
+
+      - FAIL: the summary says something like "successfully completed" AND the
+        model listed no friction points at all. That's the model glossing over
+        a session we know went wrong, so we fail it and force a retry.
+        e.g. abc123 hit a CAPTCHA + an injection, but the summary reads
+        "The agent successfully completed the task." with no friction listed.
+
+      - PASS: the summary describes the trouble, or it lists friction points.
+        e.g. "The agent was blocked by a CAPTCHA" with step 4 in friction_points.
+    """
     triggered = (
         features.get("terminal_status") == "blocked"
         or features.get("injection_count", 0) > 0
@@ -41,7 +55,15 @@ def contradiction_guard(insight: Insight, features: Dict[str, Any]) -> Tuple[boo
 
 
 def groundedness_guard(insight: Insight, event_steps: List[int]) -> Tuple[bool, str]:
-    """Every cited friction step must exist among the session's event steps."""
+    """Make sure every step the model points to is a real step in the session.
+
+    The model returns friction points that each cite a step number. We check
+    each one against the steps that actually exist. abc123 has steps 1-5, so:
+
+      - PASS: the model cites step 4 — that step exists.
+      - FAIL: the model cites step 99 — no such step, so the model made it up.
+        We fail and force a retry.
+    """
     valid = set(event_steps)
     for fp in insight.friction_points:
         if fp.step not in valid:
@@ -59,8 +81,19 @@ def cap_confidence(
     conflict_count: int,
     reject_count_for_session: int,
 ) -> float:
-    """final = min(llm, 1 - 0.2*injection - 0.2*conflict - 0.1*rejects), floored at 0.05.
-    Applied silently after generation — not a failure."""
+    """Lower the model's confidence when the session had problems we don't trust
+    it to weigh on its own. Each problem costs some confidence: an injection
+    costs 0.2, a conflict costs 0.2, each reject costs 0.1. We subtract those
+    from 1.0 to get a ceiling, then take whichever is lower — the model's number
+    or that ceiling. Never goes below 0.05. This always runs; it's never a failure.
+
+      - abc123 had 1 injection and 1 reject, so the ceiling is
+        1 - 0.2 - 0.1 = 0.7. Even if the model said 0.9, we cap it to 0.7.
+      - xyz789 had no problems, so the ceiling is 1.0 and we keep the model's
+        number, e.g. 0.6 stays 0.6.
+      - If enough problems push the ceiling near or below zero, the 0.05 floor
+        keeps confidence from going negative.
+    """
     cap = 1.0 - 0.2 * injection_count - 0.2 * conflict_count - 0.1 * reject_count_for_session
     # round() kills binary float error: 1.0 - 0.2 - 0.1 is 0.7000000000000001,
     # which would store an ugly confidence and break a <= 0.7 bound. The

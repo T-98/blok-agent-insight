@@ -19,4 +19,10 @@ web/dist/
 
 # os
 .DS_Store
+
+# misc
+.serena
 blok-build-spec.md
+CODEBASE_CONTEXT.md
+*.pdf
+*.xlsx

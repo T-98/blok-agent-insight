@@ -31,10 +31,14 @@ MAX_TOKENS = 1000
 # Data access helpers (read-only)                                             #
 # --------------------------------------------------------------------------- #
 def session_exists(conn: sqlite3.Connection, session_id: str) -> bool:
+    """True if a session row with this id exists — used to return 404 for unknown
+    sessions before doing any work."""
     return conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone() is not None
 
 
 def load_events(conn: sqlite3.Connection, session_id: str) -> List[Dict[str, Any]]:
+    """Load the session's cleaned events as dicts, in insertion order, with the
+    fields the feature functions and prompt builder need."""
     rows = conn.execute(
         """SELECT step, action, target, observation, status, content_hash, injection_flag
            FROM events WHERE session_id = ? ORDER BY id""",
@@ -44,6 +48,8 @@ def load_events(conn: sqlite3.Connection, session_id: str) -> List[Dict[str, Any
 
 
 def reject_count(conn: sqlite3.Connection, session_id: str) -> int:
+    """How many reject rows this session has — feeds the confidence cap (more
+    rejects → lower confidence ceiling)."""
     row = conn.execute("SELECT COUNT(*) AS n FROM rejects WHERE session_id = ?", (session_id,)).fetchone()
     return int(row["n"])
 
@@ -52,6 +58,9 @@ def reject_count(conn: sqlite3.Connection, session_id: str) -> int:
 # Deterministic Insight builder (fallback)                                    #
 # --------------------------------------------------------------------------- #
 def _friction_points(features: Dict[str, Any]) -> List[FrictionPoint]:
+    """Build the fallback's friction points straight from the deterministic
+    friction_events (no LLM) — one point per friction event, description is
+    "status: observation"."""
     return [
         FrictionPoint(step=f["step"], description=f"{f['status']}: {f['observation']}")
         for f in features["friction_events"]
@@ -59,6 +68,9 @@ def _friction_points(features: Dict[str, Any]) -> List[FrictionPoint]:
 
 
 def _templated_summary(session_id: str, total: int, features: Dict[str, Any]) -> str:
+    """Build the fallback summary text deterministically from features — event
+    count, progress ratio, terminal status, then optional sentences for friction,
+    a detected loop, and any flagged injection. No LLM involved."""
     pr = features["progress_ratio"]
     parts = [
         f"Session {session_id}: {total} event(s), progress ratio {pr:.0%}, "
@@ -147,6 +159,8 @@ def _validate_and_guard(
 
 
 def _apply_cap(insight: Insight, features: Dict[str, Any], rejects: int) -> Insight:
+    """Return a copy of the insight with its confidence lowered by the cap (based
+    on injection/conflict/reject counts). Always applied; never a failure."""
     capped = cap_confidence(
         insight.confidence,
         features["injection_count"],
@@ -166,6 +180,9 @@ def _persist(
     status: str,
     latency_ms: int,
 ) -> None:
+    """Append one row to insight_runs recording this generation — version, model,
+    the raw model output, the validated insight, the status (valid/retried/
+    fallback), and latency. Called on every path; rows are never overwritten."""
     with conn:
         conn.execute(
             """INSERT INTO insight_runs

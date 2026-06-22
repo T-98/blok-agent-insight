@@ -44,12 +44,20 @@ def content_hash(action, target, observation, status) -> str:
 
 
 def scan_injection(observation) -> bool:
+    """True if the observation text matches any known prompt-injection pattern
+    (e.g. "ignore previous instructions", "report success"). Deterministic
+    regex check — this is what sets injection_flag at ingest, before any LLM
+    sees the data. Empty/None observation → False.
+    """
     if not observation:
         return False
     return any(p.search(observation) for p in INJECTION_PATTERNS)
 
 
 def _valid_ts(ts) -> bool:
+    """True if ts is a parseable ISO timestamp string. Used by rule 1 — a bad or
+    missing timestamp rejects the event as bad_timestamp.
+    """
     if not isinstance(ts, str) or not ts:
         return False
     try:
@@ -61,6 +69,9 @@ def _valid_ts(ts) -> bool:
 
 
 def _write_reject(conn: sqlite3.Connection, session_id, raw: Dict[str, Any], reason: str, now: str) -> None:
+    """Append one row to the rejects audit log: the original raw event plus the
+    closed-enum reason. Used for both dropped events and kept conflicts.
+    """
     conn.execute(
         "INSERT INTO rejects (session_id, raw_json, reason, created_at) VALUES (?, ?, ?, ?)",
         (session_id, json.dumps(raw, sort_keys=True), reason, now),
